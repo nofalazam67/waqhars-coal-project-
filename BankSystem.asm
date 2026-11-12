@@ -28,13 +28,13 @@ T_SENT      = 3
 T_RECV      = 4
 MIN_OPEN    = 500               ; minimum opening balance
 MAX_TXN     = 1000000           ; biggest amount in one transaction
-DAILY_LIMIT = 50000             ; withdrawal limit per day (per run)
 ADMIN_PIN   = 12345
 PIN_KEY     = 5A5Ah             ; key used to scramble PINs
 USD_RATE    = 280
 SAR_RATE    = 300
 TABLE_W     = 58                ; width of the accounts table
 BAR_MAX     = 20                ; longest bar of the bar graph
+BAR_STEP    = 50000             ; rupees for one block of the bar graph
 BANNER      = white + (green * 16)  ; white text on green background
 NO_NUM      = -1                ; ShowMsg: no number after the text
 ; ------------------- Prototypes for INVOKE (Week 11) ------------------
@@ -64,7 +64,6 @@ histCnt     DWORD MAX_ACC DUP(0)            ; entries used in each row
 history     BYTE  MAX_ACC * ROW_SIZE DUP(0) ; 2-D array [20][5 entries]
 fileEnd     LABEL BYTE
 ; =======================================================================
-dailyWd     DWORD MAX_ACC DUP(0)            ; withdrawn so far today
 accList     DWORD MAX_ACC DUP(0)            ; list of indexes (view/sort)
 curIdx      DWORD 0                         ; logged-in account
 lastTxn     DWORD 0                         ; last transaction ID
@@ -128,16 +127,8 @@ custProcs   DWORD BalanceInquiry, Deposit, Withdraw, Transfer, MiniStatement, Ca
 calcProcs   DWORD InterestCalc, LoanCalc, CurrencyCalc, CurrencyCalc
 adminProcs  DWORD ViewAccounts, SearchAccount, SortAccounts, TotalDeposits
             DWORD FreezeAccount, DeleteAccount, BarGraph
-stmtMsg     DWORD mDeposited, mWithdrew, mSent, mReceived   ; by type 1..4
-stmtColor   DWORD lightGreen, yellow, yellow, lightGreen
-stmtDir     DWORD 0, 0, mTo, mFrom
-statText    DWORD stWorking, stFrozen                       ; by status 0..1
-statColor   DWORD lightGreen, lightRed
-rates       DWORD USD_RATE, SAR_RATE                       ; PKR per unit
-rateTxt     DWORD lRateUsd, lRateSar
 ; ------------------------------ Text ----------------------------------
 bankName    BYTE " HARA BHARA BANK ",0
-tagLine     BYTE "Grow Your Savings, Green Your Future",0
 loadingTxt  BYTE "Loading, please wait...",0
 choiceTxt   BYTE "Press a number key: ",0
 pressKey    BYTE "Press any key to continue...",0
@@ -165,12 +156,10 @@ eLockout    BYTE "3 incorrect PIN attempts. For your security the program will n
 eFrozen     BYTE "WARNING: Your account is FROZEN. Contact our helpline: 0300-1234567",0
 eNoMoneyWd  BYTE "Not enough money to withdraw.",0
 eNoMoneyTr  BYTE "Not enough money to transfer.",0
-eDaily      BYTE "Daily limit is Rs. 50000. You can withdraw only Rs. ",0
 eSelf       BYTE "You cannot transfer money to your own account.",0
 eRecvFrozen BYTE "Receiver's account is FROZEN. Transfer cannot be made.",0
 eCancel     BYTE "Transfer cancelled. No money was moved.",0
 eNoAcc      BYTE "There are no accounts in the bank yet.",0
-eNoHist     BYTE "No transactions yet on this account.",0
 eSaveFail   BYTE "ERROR: Could not save data to bankdata.dat.",0
 sCreated    BYTE "Account created successfully! Your Account Number is: ",0
 sFrozen     BYTE "Account is now FROZEN. Account No. ",0
@@ -187,7 +176,7 @@ lStatus     BYTE "Account Status : ",0
 lTxnId      BYTE "Transaction ID : ",0
 lAmount     BYTE "Amount         : Rs. ",0
 lNewBal     BYTE "New Balance    : Rs. ",0
-lThanks     BYTE "Thank you for banking with us!",0
+lScale      BYTE "Each block = Rs. 50000",0
 lTotalAcc   BYTE "Total accounts       : ",0
 lTotalDep   BYTE "Total deposits (Rs.) : ",0
 lMaturity   BYTE "Amount after interest: Rs. ",0
@@ -243,7 +232,7 @@ RmShow:
     mov  edx, pMenu
     call PrintLines                 ; draw the menu box
     INVOKE Prompt, ADDR choiceTxt
-    call GetKey
+    call ReadChar                   ; wait for one key (AL)
     call WriteChar
     call Crlf
     movzx eax, al
@@ -253,8 +242,11 @@ RmShow:
     ja   RmBad                      ; too big, or not a digit at all
     cmp  eax, 0
     je   RmBad
-    mov  esi, pProcs
-    call DWORD PTR [esi + eax*4 - 4]  ; call the procedure from the table
+    mov  esi, pProcs                ; ESI = start of the address table
+    dec  eax                        ; option 1 is element 0
+    shl  eax, 2                     ; each address is 4 bytes (x 4)
+    add  esi, eax                   ; ESI = address of the chosen element
+    call DWORD PTR [esi]            ; call that procedure
     jmp  RmPause
 RmBad:
     INVOKE ShowMsg, lightRed, ADDR eChoice, NO_NUM
@@ -331,7 +323,6 @@ ShowHeader PROC
     call Clrscr
     INVOKE ShowMsg, green, ADDR dblLine, NO_NUM
     INVOKE ShowMsg, BANNER, ADDR bankName, NO_NUM
-    INVOKE ShowMsg, lightGreen, ADDR tagLine, NO_NUM
     INVOKE ShowMsg, green, ADDR dblLine, NO_NUM
     call Crlf
     ret
@@ -391,11 +382,14 @@ NameLine PROC USES edx, pText:PTR BYTE
 NameLine ENDP
 ; ----------------------------------------------------------------------
 WriteStatus PROC USES eax edx
-; Writes "Working" (green) or "Frozen" (red) for account ESI,
-; picking the text and colour from two small tables.
-    movzx eax, accStat[esi]
-    mov  edx, statText[eax*4]
-    mov  eax, statColor[eax*4]
+; Writes "Working" in green or "Frozen" in red for account ESI.
+    mov  eax, lightGreen
+    mov  edx, OFFSET stWorking
+    cmp  accStat[esi], 1
+    jne  WsPrint
+    mov  eax, lightRed
+    mov  edx, OFFSET stFrozen
+WsPrint:
     call SetTextColor
     call WriteString
     mov  eax, white
@@ -403,20 +397,11 @@ WriteStatus PROC USES eax edx
     ret
 WriteStatus ENDP
 ; ----------------------------------------------------------------------
-GetKey PROC
-; Waits for a normal key (not Shift, arrows, ...) and returns it in AL.
-GkWait:
-    call ReadChar
-    cmp  al, 0
-    je   GkWait
-    ret
-GetKey ENDP
-; ----------------------------------------------------------------------
 AskYesNo PROC USES eax edx
 ; Prints (Y/N) and waits. Returns ZF = 1 when the answer is Y or y.
     mov  edx, OFFSET pYesNo
     call WriteString
-    call GetKey
+    call ReadChar                   ; wait for one key (AL)
     call WriteChar
     call Crlf
     or   al, 20h                    ; make it lowercase (Boolean OR)
@@ -427,7 +412,7 @@ AskYesNo ENDP
 PressAnyKey PROC USES eax
     call Crlf
     INVOKE ShowMsg, yellow, ADDR pressKey, NO_NUM
-    call GetKey
+    call ReadChar                   ; wait for one key (AL)
     ret
 PressAnyKey ENDP
 ; ----------------------------------------------------------------------
@@ -460,10 +445,12 @@ ReadNumber PROC USES ebx ecx edx esi
     mov  esi, OFFSET inBuf
     mov  eax, 0
 RnLoop:
-    movzx ebx, BYTE PTR [esi]
-    sub  bl, '0'                    ; '0'..'9' -> 0..9
-    cmp  bl, 9
-    ja   RnBad                      ; anything else is above 9 (unsigned)
+    movzx ebx, BYTE PTR [esi]       ; EBX = next character
+    cmp  bl, '0'                    ; is it a digit '0'..'9'?
+    jb   RnBad
+    cmp  bl, '9'
+    ja   RnBad
+    sub  bl, '0'                    ; '7' -> 7
     imul eax, 10                    ; value = value * 10 + digit
     add  eax, ebx
     inc  esi
@@ -493,21 +480,20 @@ ArOk:
     ret
 AskRange ENDP
 ; ----------------------------------------------------------------------
-FindAccount PROC USES ecx edi
-; Searches accNum for the number in EAX using the REPNE SCASD string
-; primitive (EAX = 0 finds an empty slot).
+FindAccount PROC USES ecx
+; Looks for the account number in EAX (EAX = 0 finds an empty slot).
 ; Returns ESI = index and CF = 0, or CF = 1 when it is not there.
-    mov  edi, OFFSET accNum
+    mov  esi, 0                     ; ESI = index
     mov  ecx, MAX_ACC
-    cld
-    repne scasd                     ; compare EAX with each DWORD
-    stc                             ; (STC does not change ZF)
-    jne  FaDone
-    mov  esi, edi                   ; EDI is one element past the match
-    sub  esi, OFFSET accNum + 4
-    shr  esi, 2                     ; byte offset / 4 = index
-    clc
-FaDone:
+FaLoop:
+    cmp  accNum[esi*4], eax
+    je   FaFound
+    inc  esi
+    loop FaLoop
+    stc                             ; not found
+    ret
+FaFound:
+    clc                             ; found
     ret
 FindAccount ENDP
 ; ----------------------------------------------------------------------
@@ -538,10 +524,12 @@ RpKey:
     call ReadChar
     cmp  al, 13                     ; Enter key
     je   RpDone
-    sub  al, '0'
-    cmp  al, 9
-    ja   RpKey                      ; ignore anything that is not a digit
+    cmp  al, '0'                    ; ignore anything that is not a digit
+    jb   RpKey
+    cmp  al, '9'
+    ja   RpKey
     movzx edx, al
+    sub  edx, '0'                   ; '7' -> 7
     imul ebx, 10
     add  ebx, edx
     inc  ecx
@@ -617,7 +605,6 @@ CaPinOk:
     INVOKE AskRange, ADDR pOpenBal, MIN_OPEN, MAX_TXN   ; opening balance
     mov  accBal[esi*4], eax
     mov  histCnt[esi*4], 0
-    mov  dailyWd[esi*4], 0
     mov  ebx, nextAccNo             ; unique account number
     mov  accNum[esi*4], ebx
     inc  nextAccNo
@@ -677,21 +664,11 @@ Withdraw PROC
     INVOKE AskRange, ADDR pAmount, 1, MAX_TXN   ; EAX = amount
     mov  esi, curIdx
     cmp  eax, accBal[esi*4]         ; enough money?
-    jbe  WdDaily
+    jbe  WdOk
     INVOKE ShowMsg, lightRed, ADDR eNoMoneyWd, NO_NUM
     ret
-WdDaily:
-    mov  ebx, dailyWd[esi*4]        ; daily limit not crossed?
-    add  ebx, eax
-    cmp  ebx, DAILY_LIMIT
-    jbe  WdOk
-    mov  ebx, DAILY_LIMIT           ; amount still allowed today
-    sub  ebx, dailyWd[esi*4]
-    INVOKE ShowMsg, lightRed, ADDR eDaily, ebx
-    ret
 WdOk:
-    mov  dailyWd[esi*4], ebx
-    sub  accBal[esi*4], eax
+    sub  accBal[esi*4], eax         ; take the money out
     INVOKE AddHistory, esi, T_WD, eax, esi
     INVOKE Receipt, eax
     ret
@@ -742,7 +719,8 @@ AddHistory PROC USES eax ebx ecx edx esi edi,
     cmp  histCnt[esi*4], HIST_MAX
     jb   AhRoom
     mov  edi, ebx                   ; row is full: move entries 1..4 to 0..3
-    lea  esi, [ebx + H_SIZE]
+    mov  esi, ebx
+    add  esi, H_SIZE
     mov  ecx, (HIST_MAX - 1) * H_SIZE
     cld
     rep  movsb                      ; string primitive: copy bytes
@@ -767,7 +745,8 @@ AhRoom:
     mov  [ebx + H_ACC], eax
     call GetNamePtr
     mov  esi, edx
-    lea  edi, [ebx + H_NAME]
+    mov  edi, ebx
+    add  edi, H_NAME
     mov  ecx, NAME_LEN
     rep  movsb                      ; copy the other person's name
     ret
@@ -783,7 +762,6 @@ Receipt PROC USES esi, amount:DWORD
     mov  esi, curIdx
     INVOKE InfoLine, ADDR lNewBal, accBal[esi*4]
     INVOKE ShowMsg, green, ADDR dblLine, NO_NUM
-    INVOKE ShowMsg, lightGreen, ADDR lThanks, NO_NUM
     ret
 Receipt ENDP
 ; ----------------------------------------------------------------------
@@ -791,30 +769,38 @@ MiniStatement PROC
 ; Prints the last 5 transactions of the logged-in account as sentences.
     call BalanceInquiry             ; account details, ESI = curIdx
     call Crlf
-    mov  ecx, histCnt[esi*4]
-    cmp  ecx, 0
-    jne  MsHave
-    INVOKE ShowMsg, yellow, ADDR eNoHist, NO_NUM
-    ret
-MsHave:
+    mov  ecx, histCnt[esi*4]        ; 1..5 (the opening deposit is always there)
     mov  ebx, esi                   ; EBX = first entry of this row
     imul ebx, ROW_SIZE
     add  ebx, OFFSET history
 MsLoop:                             ; ECX is not changed by the calls
     INVOKE InfoLine, ADDR lTxnId, DWORD PTR [ebx + H_TXN]
     INVOKE Prompt, ADDR mGap
-    mov  esi, [ebx + H_TYPE]        ; type 1..4 picks message and colour
-    mov  eax, stmtColor[esi*4 - 4]
-    call SetTextColor
-    mov  edx, stmtMsg[esi*4 - 4]
+    mov  esi, [ebx + H_TYPE]        ; ESI = type of this transaction
+    mov  edx, OFFSET mDeposited     ; choose the sentence for the type
+    cmp  esi, T_DEP
+    je   MsAmount
+    mov  edx, OFFSET mWithdrew
+    cmp  esi, T_WD
+    je   MsAmount
+    mov  edx, OFFSET mSent
+    cmp  esi, T_SENT
+    je   MsAmount
+    mov  edx, OFFSET mReceived
+MsAmount:
     call WriteString
     mov  eax, [ebx + H_AMT]
     call WriteDec
+    cmp  esi, T_WD                  ; deposit / withdrawal: sentence ends
+    jbe  MsNext
+    mov  edx, OFFSET mTo            ; sent -> " to ", received -> " from "
     cmp  esi, T_SENT
-    jb   MsNext                     ; deposit / withdrawal: sentence ends
-    mov  edx, stmtDir[esi*4 - 4]    ; " to " or " from "
-    call WriteString                ; then "NAME - Account No. N"
-    lea  edx, [ebx + H_NAME]
+    je   MsOther
+    mov  edx, OFFSET mFrom
+MsOther:
+    call WriteString
+    mov  edx, ebx                   ; then "NAME - Account No. N"
+    add  edx, H_NAME
     call WriteString
     mov  edx, OFFSET mAccTxt
     call WriteString
@@ -823,7 +809,8 @@ MsLoop:                             ; ECX is not changed by the calls
 MsNext:
     call Crlf
     add  ebx, H_SIZE                ; next entry
-    loop MsLoop
+    dec  ecx                        ; (loop body is too long for LOOP)
+    jnz  MsLoop
     ret
 MiniStatement ENDP
 ; ======================================================================
@@ -892,11 +879,17 @@ LoanCalc PROC
 LoanCalc ENDP
 ; ----------------------------------------------------------------------
 CurrencyCalc PROC
-; EAX = menu option (3 = USD, 4 = SAR). Rate and text come from tables.
-    mov  ebx, rates[eax*4 - 12]     ; option 3 -> element 0
-    INVOKE ShowMsg, yellow, rateTxt[eax*4 - 12], NO_NUM
+; EAX = menu option: 3 = USD, 4 = SAR. The rates are fixed constants.
+    mov  ebx, USD_RATE
+    mov  edx, OFFSET lRateUsd
+    cmp  eax, 3
+    je   CcAsk
+    mov  ebx, SAR_RATE
+    mov  edx, OFFSET lRateSar
+CcAsk:
+    INVOKE ShowMsg, yellow, edx, NO_NUM
     INVOKE AskRange, ADDR pAmount, 1, MAX_TXN
-    mul  ebx                        ; EAX = amount * fixed rate
+    mul  ebx                        ; EAX = amount * rate
     INVOKE ShowMsg, lightGreen, ADDR lPkr, eax
     ret
 CurrencyCalc ENDP
@@ -1008,10 +1001,12 @@ TotalDeposits PROC
 ; Adds all balances as a 64-bit number in EDX:EAX using ADD and ADC.
     mov  eax, 0                     ; low 32 bits
     mov  edx, 0                     ; high 32 bits
+    mov  esi, 0                     ; ESI = index
     mov  ecx, MAX_ACC
 TdLoop:
-    add  eax, accBal[ecx*4 - 4]     ; empty slots hold 0
+    add  eax, accBal[esi*4]         ; empty slots hold 0
     adc  edx, 0                     ; carry goes into the high part
+    inc  esi
     loop TdLoop
     INVOKE InfoLine, ADDR lTotalAcc, accCount
     INVOKE InfoLine, ADDR lTotalDep, eax   ; (high part is 0 for 20 accounts)
@@ -1047,36 +1042,32 @@ DaEnd:
 DeleteAccount ENDP
 ; ----------------------------------------------------------------------
 BarGraph PROC
-; Bar length = balance * BAR_MAX / highest balance, in rotating colours.
-    mov  ebx, 1                     ; EBX = highest balance (at least 1)
-    mov  ecx, MAX_ACC               ; (empty slots hold 0, so including
-BgMax:                              ;  them does not change the maximum)
-    cmp  accBal[ecx*4 - 4], ebx
-    jbe  BgMaxNext
-    mov  ebx, accBal[ecx*4 - 4]
-BgMaxNext:
-    loop BgMax
+; One block for every Rs. 50000 of balance (at least 1, at most BAR_MAX).
     call BuildList                  ; ECX = number of accounts
     cmp  ecx, 0
     jne  BgHave
     INVOKE ShowMsg, yellow, ADDR eNoAcc, NO_NUM
     ret
 BgHave:
+    INVOKE ShowMsg, lightCyan, ADDR lScale, NO_NUM
     mov  edi, 0                     ; EDI = row number
 BgRow:
     push ecx
     mov  esi, accList[edi*4]
     INVOKE Prompt, ADDR mGap        ; left margin
-    mov  eax, edi                   ; colour 10..13 chosen by row number
-    and  eax, 3
-    add  eax, lightGreen
+    mov  eax, lightGreen
     call SetTextColor
     mov  eax, accBal[esi*4]
-    mov  ecx, BAR_MAX
-    mul  ecx
-    div  ebx                        ; EAX = balance * BAR_MAX / highest
-    lea  ecx, [eax + 1]             ; every bar has at least one block
-    mov  al, 219
+    mov  edx, 0
+    mov  ebx, BAR_STEP
+    div  ebx                        ; EAX = balance / 50000
+    inc  eax                        ; every bar has at least one block
+    cmp  eax, BAR_MAX
+    jbe  BgLen
+    mov  eax, BAR_MAX               ; very big balances: longest bar
+BgLen:
+    mov  ecx, eax                   ; ECX = number of blocks
+    mov  al, 254                    ; small square character
 BgBlock:
     call WriteChar
     loop BgBlock

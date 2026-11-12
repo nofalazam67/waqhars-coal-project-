@@ -41,9 +41,9 @@ main ENDP
 
 ### `RunMenu`
 
-**Course concepts:** Table-driven selection / arrays (Wk 5, 8-9); indirect `CALL` through an address table, addressing modes (Wk 4, 14); conditional jumps (Wk 8-9); stack frame parameters (Wk 11)
+**Course concepts:** Table-driven selection with an array of procedure addresses (Wk 5, 8-9); `SHL` to multiply by 4 (Wk 10); conditional jumps (Wk 8-9); stack parameters (Wk 11)
 
-One menu routine is used for **all four menus**. It draws the menu, reads one key, turns `'1'` into the number 1 (`SUB eax,'0'`) and checks the range. The last option always means Back/Logout/Exit. For a valid option it calls the procedure whose address is stored in a table such as `custProcs` (`call DWORD PTR [esi + eax*4 - 4]`): option 1 is element 0, option 2 is element 1, and so on. After the procedure finishes it waits for a key and shows the menu again.
+One menu routine is used for **all four menus**. It draws the menu, reads one key, turns `'1'` into the number 1 (`SUB eax,'0'`) and checks the range. The last option always means Back/Logout/Exit. Each menu has a DWORD array that holds the addresses of its procedures (e.g. `custProcs`). To find the right element: subtract 1 (option 1 is element 0), multiply by 4 with `SHL eax,2` (each address is 4 bytes), add it to the start of the array, then `call DWORD PTR [esi]`. After the procedure finishes it waits for a key and shows the menu again.
 
 ```asm
 RunMenu PROC, pMenu:PTR BYTE, pProcs:PTR DWORD, nOpts:DWORD
@@ -55,7 +55,7 @@ RmShow:
     mov  edx, pMenu
     call PrintLines                 ; draw the menu box
     INVOKE Prompt, ADDR choiceTxt
-    call GetKey
+    call ReadChar                   ; wait for one key (AL)
     call WriteChar
     call Crlf
     movzx eax, al
@@ -65,8 +65,11 @@ RmShow:
     ja   RmBad                      ; too big, or not a digit at all
     cmp  eax, 0
     je   RmBad
-    mov  esi, pProcs
-    call DWORD PTR [esi + eax*4 - 4]  ; call the procedure from the table
+    mov  esi, pProcs                ; ESI = start of the address table
+    dec  eax                        ; option 1 is element 0
+    shl  eax, 2                     ; each address is 4 bytes (x 4)
+    add  esi, eax                   ; ESI = address of the chosen element
+    call DWORD PTR [esi]            ; call that procedure
     jmp  RmPause
 RmBad:
     INVOKE ShowMsg, lightRed, ADDR eChoice, NO_NUM
@@ -175,7 +178,7 @@ PrintLines ENDP
 
 **Course concepts:** Procedures (Wk 7); INVOKE / ADDR (Wk 11)
 
-Clears the screen and draws the bank banner: a double line, **HARA BHARA BANK** (white on green, centred), the tag line and another double line. Called at the top of every screen.
+Clears the screen and draws the bank banner: a double line, **HARA BHARA BANK** (white on green, centred) and another double line. Called at the top of every screen.
 
 ```asm
 ShowHeader PROC
@@ -183,7 +186,6 @@ ShowHeader PROC
     call Clrscr
     INVOKE ShowMsg, green, ADDR dblLine, NO_NUM
     INVOKE ShowMsg, BANNER, ADDR bankName, NO_NUM
-    INVOKE ShowMsg, lightGreen, ADDR tagLine, NO_NUM
     INVOKE ShowMsg, green, ADDR dblLine, NO_NUM
     call Crlf
     ret
@@ -277,40 +279,26 @@ NameLine ENDP
 
 ### `WriteStatus`
 
-**Course concepts:** Arrays used as lookup tables, scaled index addressing `[eax*4]` (Wk 4, 5)
+**Course concepts:** Comparison and conditional jump (Wk 8-9)
 
-Prints **Working** in green or **Frozen** in red. The status byte (0 or 1) is used as an index into two small tables: one holds the text, the other the colour - no IF needed.
+Prints **Working** in green or **Frozen** in red. If the status byte is 1 it picks the red *Frozen* text, otherwise the green *Working* text.
 
 ```asm
 WriteStatus PROC USES eax edx
-; Writes "Working" (green) or "Frozen" (red) for account ESI,
-; picking the text and colour from two small tables.
-    movzx eax, accStat[esi]
-    mov  edx, statText[eax*4]
-    mov  eax, statColor[eax*4]
+; Writes "Working" in green or "Frozen" in red for account ESI.
+    mov  eax, lightGreen
+    mov  edx, OFFSET stWorking
+    cmp  accStat[esi], 1
+    jne  WsPrint
+    mov  eax, lightRed
+    mov  edx, OFFSET stFrozen
+WsPrint:
     call SetTextColor
     call WriteString
     mov  eax, white
     call SetTextColor
     ret
 WriteStatus ENDP
-```
-
-### `GetKey`
-
-**Course concepts:** Conditional loop (Wk 8-9)
-
-Waits for a key with Irvine's `ReadChar` and ignores keys that have no character (Shift, arrows ...), which return 0.
-
-```asm
-GetKey PROC
-; Waits for a normal key (not Shift, arrows, ...) and returns it in AL.
-GkWait:
-    call ReadChar
-    cmp  al, 0
-    je   GkWait
-    ret
-GetKey ENDP
 ```
 
 ### `AskYesNo`
@@ -324,7 +312,7 @@ AskYesNo PROC USES eax edx
 ; Prints (Y/N) and waits. Returns ZF = 1 when the answer is Y or y.
     mov  edx, OFFSET pYesNo
     call WriteString
-    call GetKey
+    call ReadChar                   ; wait for one key (AL)
     call WriteChar
     call Crlf
     or   al, 20h                    ; make it lowercase (Boolean OR)
@@ -343,7 +331,7 @@ Prints a yellow *Press any key to continue...* and waits.
 PressAnyKey PROC USES eax
     call Crlf
     INVOKE ShowMsg, yellow, ADDR pressKey, NO_NUM
-    call GetKey
+    call ReadChar                   ; wait for one key (AL)
     ret
 PressAnyKey ENDP
 ```
@@ -371,7 +359,7 @@ GetNamePtr ENDP
 
 **Course concepts:** Strings (Wk 13); character arithmetic (Wk 3, 4); multiplication (Wk 10); `CLC/STC` and the Carry flag (Wk 8-9); loops (Wk 5)
 
-**The one reusable validation routine.** Reads a line as text and checks every character. Each char has '0' subtracted; if the result is above 9 (unsigned compare) the char was not a digit. The number is built as `value = value*10 + digit`. Empty input, letters/symbols and more than 9 digits each get their own red message. Returns CF = 0 and the value in EAX, or CF = 1 on error.
+**The one reusable validation routine.** Reads a line as text and checks every character. Each character must be between '0' and '9' (two `CMP`s); then '0' is subtracted to get its value. The number is built as `value = value*10 + digit`. Empty input, letters/symbols and more than 9 digits each get their own red message. Returns CF = 0 and the value in EAX, or CF = 1 on error.
 
 ```asm
 ReadNumber PROC USES ebx ecx edx esi
@@ -392,10 +380,12 @@ ReadNumber PROC USES ebx ecx edx esi
     mov  esi, OFFSET inBuf
     mov  eax, 0
 RnLoop:
-    movzx ebx, BYTE PTR [esi]
-    sub  bl, '0'                    ; '0'..'9' -> 0..9
-    cmp  bl, 9
-    ja   RnBad                      ; anything else is above 9 (unsigned)
+    movzx ebx, BYTE PTR [esi]       ; EBX = next character
+    cmp  bl, '0'                    ; is it a digit '0'..'9'?
+    jb   RnBad
+    cmp  bl, '9'
+    ja   RnBad
+    sub  bl, '0'                    ; '7' -> 7
     imul eax, 10                    ; value = value * 10 + digit
     add  eax, ebx
     inc  esi
@@ -436,26 +426,25 @@ AskRange ENDP
 
 ### `FindAccount`
 
-**Course concepts:** String primitive `REPNE SCASD` (Wk 13); `SHR` to divide by 4 (Wk 10); Carry flag (Wk 8-9)
+**Course concepts:** Arrays and `LOOP` (Wk 5); Carry flag as a return value (Wk 8-9)
 
-Searches the `accNum` array for the account number in EAX using the string instruction `REPNE SCASD`. When it stops, EDI points one element past the match, so `(EDI - start - 4) / 4` is the index. With EAX = 0 it finds the first empty slot (used when creating an account).
+Goes through the `accNum` array one element at a time and compares each with the account number in EAX. It returns the index in ESI with CF = 0, or CF = 1 if not found. With EAX = 0 it finds the first empty slot (used when creating an account).
 
 ```asm
-FindAccount PROC USES ecx edi
-; Searches accNum for the number in EAX using the REPNE SCASD string
-; primitive (EAX = 0 finds an empty slot).
+FindAccount PROC USES ecx
+; Looks for the account number in EAX (EAX = 0 finds an empty slot).
 ; Returns ESI = index and CF = 0, or CF = 1 when it is not there.
-    mov  edi, OFFSET accNum
+    mov  esi, 0                     ; ESI = index
     mov  ecx, MAX_ACC
-    cld
-    repne scasd                     ; compare EAX with each DWORD
-    stc                             ; (STC does not change ZF)
-    jne  FaDone
-    mov  esi, edi                   ; EDI is one element past the match
-    sub  esi, OFFSET accNum + 4
-    shr  esi, 2                     ; byte offset / 4 = index
-    clc
-FaDone:
+FaLoop:
+    cmp  accNum[esi*4], eax
+    je   FaFound
+    inc  esi
+    loop FaLoop
+    stc                             ; not found
+    ret
+FaFound:
+    clc                             ; found
     ret
 FindAccount ENDP
 ```
@@ -504,10 +493,12 @@ RpKey:
     call ReadChar
     cmp  al, 13                     ; Enter key
     je   RpDone
-    sub  al, '0'
-    cmp  al, 9
-    ja   RpKey                      ; ignore anything that is not a digit
+    cmp  al, '0'                    ; ignore anything that is not a digit
+    jb   RpKey
+    cmp  al, '9'
+    ja   RpKey
     movzx edx, al
+    sub  edx, '0'                   ; '7' -> 7
     imul ebx, 10
     add  ebx, edx
     inc  ecx
@@ -607,7 +598,6 @@ CaPinOk:
     INVOKE AskRange, ADDR pOpenBal, MIN_OPEN, MAX_TXN   ; opening balance
     mov  accBal[esi*4], eax
     mov  histCnt[esi*4], 0
-    mov  dailyWd[esi*4], 0
     mov  ebx, nextAccNo             ; unique account number
     mov  accNum[esi*4], ebx
     inc  nextAccNo
@@ -700,28 +690,18 @@ Deposit ENDP
 
 **Course concepts:** Unsigned comparison `CMP/JBE` (Wk 8-9); `SUB` (Wk 4)
 
-Refuses with *Not enough money to withdraw.* if the amount is more than the balance, and with a daily-limit message if today's total would pass Rs. 50,000 (it tells how much can still be withdrawn). Otherwise subtracts, records history and prints a receipt.
+Refuses with *Not enough money to withdraw.* if the amount is more than the balance. Otherwise subtracts it, records history and prints a receipt.
 
 ```asm
 Withdraw PROC
     INVOKE AskRange, ADDR pAmount, 1, MAX_TXN   ; EAX = amount
     mov  esi, curIdx
     cmp  eax, accBal[esi*4]         ; enough money?
-    jbe  WdDaily
+    jbe  WdOk
     INVOKE ShowMsg, lightRed, ADDR eNoMoneyWd, NO_NUM
     ret
-WdDaily:
-    mov  ebx, dailyWd[esi*4]        ; daily limit not crossed?
-    add  ebx, eax
-    cmp  ebx, DAILY_LIMIT
-    jbe  WdOk
-    mov  ebx, DAILY_LIMIT           ; amount still allowed today
-    sub  ebx, dailyWd[esi*4]
-    INVOKE ShowMsg, lightRed, ADDR eDaily, ebx
-    ret
 WdOk:
-    mov  dailyWd[esi*4], ebx
-    sub  accBal[esi*4], eax
+    sub  accBal[esi*4], eax         ; take the money out
     INVOKE AddHistory, esi, T_WD, eax, esi
     INVOKE Receipt, eax
     ret
@@ -788,7 +768,8 @@ AddHistory PROC USES eax ebx ecx edx esi edi,
     cmp  histCnt[esi*4], HIST_MAX
     jb   AhRoom
     mov  edi, ebx                   ; row is full: move entries 1..4 to 0..3
-    lea  esi, [ebx + H_SIZE]
+    mov  esi, ebx
+    add  esi, H_SIZE
     mov  ecx, (HIST_MAX - 1) * H_SIZE
     cld
     rep  movsb                      ; string primitive: copy bytes
@@ -813,7 +794,8 @@ AhRoom:
     mov  [ebx + H_ACC], eax
     call GetNamePtr
     mov  esi, edx
-    lea  edi, [ebx + H_NAME]
+    mov  edi, ebx
+    add  edi, H_NAME
     mov  ecx, NAME_LEN
     rep  movsb                      ; copy the other person's name
     ret
@@ -837,46 +819,53 @@ Receipt PROC USES esi, amount:DWORD
     mov  esi, curIdx
     INVOKE InfoLine, ADDR lNewBal, accBal[esi*4]
     INVOKE ShowMsg, green, ADDR dblLine, NO_NUM
-    INVOKE ShowMsg, lightGreen, ADDR lThanks, NO_NUM
     ret
 Receipt ENDP
 ```
 
 ### `MiniStatement`
 
-**Course concepts:** Lookup tables indexed by type (Wk 5); based addressing `[ebx + H_AMT]` (Wk 4, 14); loops (Wk 5)
+**Course concepts:** Comparisons and conditional jumps (Wk 8-9); based addressing `[ebx + H_AMT]` (Wk 4); loop with `DEC/JNZ` (Wk 5, 8-9)
 
-Shows the last 5 transactions as sentences: *You deposited - Rs. 5000*, *You withdrew - Rs. 1000*, *You sent - Rs. 500 to Sara Ahmed - Account No. 1002*, *You received - Rs. 100 from Ali Khan - Account No. 1001*. The type (1..4) picks the sentence and its colour from tables.
+Shows the last 5 transactions as sentences: *You deposited - Rs. 5000*, *You withdrew - Rs. 1000*, *You sent - Rs. 500 to Sara Ahmed - Account No. 1002*, *You received - Rs. 100 from Ali Khan - Account No. 1001*. A chain of `CMP`/`JE` picks the sentence for the type (1 = deposit, 2 = withdraw, 3 = sent, 4 = received). The loop uses `DEC ECX / JNZ` because its body is too long for `LOOP` (which can only jump 128 bytes).
 
 ```asm
 MiniStatement PROC
 ; Prints the last 5 transactions of the logged-in account as sentences.
     call BalanceInquiry             ; account details, ESI = curIdx
     call Crlf
-    mov  ecx, histCnt[esi*4]
-    cmp  ecx, 0
-    jne  MsHave
-    INVOKE ShowMsg, yellow, ADDR eNoHist, NO_NUM
-    ret
-MsHave:
+    mov  ecx, histCnt[esi*4]        ; 1..5 (the opening deposit is always there)
     mov  ebx, esi                   ; EBX = first entry of this row
     imul ebx, ROW_SIZE
     add  ebx, OFFSET history
 MsLoop:                             ; ECX is not changed by the calls
     INVOKE InfoLine, ADDR lTxnId, DWORD PTR [ebx + H_TXN]
     INVOKE Prompt, ADDR mGap
-    mov  esi, [ebx + H_TYPE]        ; type 1..4 picks message and colour
-    mov  eax, stmtColor[esi*4 - 4]
-    call SetTextColor
-    mov  edx, stmtMsg[esi*4 - 4]
+    mov  esi, [ebx + H_TYPE]        ; ESI = type of this transaction
+    mov  edx, OFFSET mDeposited     ; choose the sentence for the type
+    cmp  esi, T_DEP
+    je   MsAmount
+    mov  edx, OFFSET mWithdrew
+    cmp  esi, T_WD
+    je   MsAmount
+    mov  edx, OFFSET mSent
+    cmp  esi, T_SENT
+    je   MsAmount
+    mov  edx, OFFSET mReceived
+MsAmount:
     call WriteString
     mov  eax, [ebx + H_AMT]
     call WriteDec
+    cmp  esi, T_WD                  ; deposit / withdrawal: sentence ends
+    jbe  MsNext
+    mov  edx, OFFSET mTo            ; sent -> " to ", received -> " from "
     cmp  esi, T_SENT
-    jb   MsNext                     ; deposit / withdrawal: sentence ends
-    mov  edx, stmtDir[esi*4 - 4]    ; " to " or " from "
-    call WriteString                ; then "NAME - Account No. N"
-    lea  edx, [ebx + H_NAME]
+    je   MsOther
+    mov  edx, OFFSET mFrom
+MsOther:
+    call WriteString
+    mov  edx, ebx                   ; then "NAME - Account No. N"
+    add  edx, H_NAME
     call WriteString
     mov  edx, OFFSET mAccTxt
     call WriteString
@@ -885,7 +874,8 @@ MsLoop:                             ; ECX is not changed by the calls
 MsNext:
     call Crlf
     add  ebx, H_SIZE                ; next entry
-    loop MsLoop
+    dec  ecx                        ; (loop body is too long for LOOP)
+    jnz  MsLoop
     ret
 MiniStatement ENDP
 ```
@@ -996,17 +986,23 @@ LoanCalc ENDP
 
 ### `CurrencyCalc`
 
-**Course concepts:** Lookup tables (Wk 5); `MUL` (Wk 10); symbolic constants (Wk 3)
+**Course concepts:** Comparison and jumps (Wk 8-9); `MUL` (Wk 10); symbolic constants (Wk 3)
 
-Rates are fixed constants (USD = 280 PKR, SAR = 300 PKR); the user only types the amount. The menu option (3 or 4) selects the rate and its text from two tables.
+Rates are fixed constants (USD = 280 PKR, SAR = 300 PKR); the user only types the amount. The menu option in EAX (3 = USD, 4 = SAR) is compared to choose the rate.
 
 ```asm
 CurrencyCalc PROC
-; EAX = menu option (3 = USD, 4 = SAR). Rate and text come from tables.
-    mov  ebx, rates[eax*4 - 12]     ; option 3 -> element 0
-    INVOKE ShowMsg, yellow, rateTxt[eax*4 - 12], NO_NUM
+; EAX = menu option: 3 = USD, 4 = SAR. The rates are fixed constants.
+    mov  ebx, USD_RATE
+    mov  edx, OFFSET lRateUsd
+    cmp  eax, 3
+    je   CcAsk
+    mov  ebx, SAR_RATE
+    mov  edx, OFFSET lRateSar
+CcAsk:
+    INVOKE ShowMsg, yellow, edx, NO_NUM
     INVOKE AskRange, ADDR pAmount, 1, MAX_TXN
-    mul  ebx                        ; EAX = amount * fixed rate
+    mul  ebx                        ; EAX = amount * rate
     INVOKE ShowMsg, lightGreen, ADDR lPkr, eax
     ret
 CurrencyCalc ENDP
@@ -1166,10 +1162,12 @@ TotalDeposits PROC
 ; Adds all balances as a 64-bit number in EDX:EAX using ADD and ADC.
     mov  eax, 0                     ; low 32 bits
     mov  edx, 0                     ; high 32 bits
+    mov  esi, 0                     ; ESI = index
     mov  ecx, MAX_ACC
 TdLoop:
-    add  eax, accBal[ecx*4 - 4]     ; empty slots hold 0
+    add  eax, accBal[esi*4]         ; empty slots hold 0
     adc  edx, 0                     ; carry goes into the high part
+    inc  esi
     loop TdLoop
     INVOKE InfoLine, ADDR lTotalAcc, accCount
     INVOKE InfoLine, ADDR lTotalDep, eax   ; (high part is 0 for 20 accounts)
@@ -1223,42 +1221,38 @@ DeleteAccount ENDP
 
 ### `BarGraph`
 
-**Course concepts:** `MUL/DIV` for scaling (Wk 10); Boolean `AND` (Wk 8-9); loops (Wk 5)
+**Course concepts:** `DIV` (Wk 10); comparisons (Wk 8-9); loops (Wk 5)
 
-Finds the highest balance, then draws one coloured bar per account: length = balance x 20 / highest (at least 1 block). `AND eax,3` + `lightGreen` rotates between 4 colours.
+Draws one green bar per account: one block for every Rs. 50,000 (`balance / 50000 + 1`, at most 20 blocks), followed by the name and balance.
 
 ```asm
 BarGraph PROC
-; Bar length = balance * BAR_MAX / highest balance, in rotating colours.
-    mov  ebx, 1                     ; EBX = highest balance (at least 1)
-    mov  ecx, MAX_ACC               ; (empty slots hold 0, so including
-BgMax:                              ;  them does not change the maximum)
-    cmp  accBal[ecx*4 - 4], ebx
-    jbe  BgMaxNext
-    mov  ebx, accBal[ecx*4 - 4]
-BgMaxNext:
-    loop BgMax
+; One block for every Rs. 50000 of balance (at least 1, at most BAR_MAX).
     call BuildList                  ; ECX = number of accounts
     cmp  ecx, 0
     jne  BgHave
     INVOKE ShowMsg, yellow, ADDR eNoAcc, NO_NUM
     ret
 BgHave:
+    INVOKE ShowMsg, lightCyan, ADDR lScale, NO_NUM
     mov  edi, 0                     ; EDI = row number
 BgRow:
     push ecx
     mov  esi, accList[edi*4]
     INVOKE Prompt, ADDR mGap        ; left margin
-    mov  eax, edi                   ; colour 10..13 chosen by row number
-    and  eax, 3
-    add  eax, lightGreen
+    mov  eax, lightGreen
     call SetTextColor
     mov  eax, accBal[esi*4]
-    mov  ecx, BAR_MAX
-    mul  ecx
-    div  ebx                        ; EAX = balance * BAR_MAX / highest
-    lea  ecx, [eax + 1]             ; every bar has at least one block
-    mov  al, 219
+    mov  edx, 0
+    mov  ebx, BAR_STEP
+    div  ebx                        ; EAX = balance / 50000
+    inc  eax                        ; every bar has at least one block
+    cmp  eax, BAR_MAX
+    jbe  BgLen
+    mov  eax, BAR_MAX               ; very big balances: longest bar
+BgLen:
+    mov  ecx, eax                   ; ECX = number of blocks
+    mov  al, 254                    ; small square character
 BgBlock:
     call WriteChar
     loop BgBlock

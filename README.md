@@ -4,7 +4,7 @@ EL-2003 COAL Lab project, written in x86 assembly (MASM) with the Irvine32 libra
 
 | File | What it is |
 |------|------------|
-| `BankSystem.asm` | The whole program: 996 lines of code, not counting comments and blank lines |
+| `BankSystem.asm` | The whole program: 991 lines of code, not counting comments and blank lines |
 | `FUNCTIONS.md` | A guide to every procedure: its code, the syllabus topic it uses, and a plain explanation |
 
 ## How to build and run (Visual Studio + Irvine32)
@@ -22,7 +22,6 @@ The box and block characters need the normal Windows console code page (437), wh
 * The bank holds at most 20 accounts. Account numbers start at 1001.
 * After 3 wrong PINs the program saves the data and exits. This applies to customer and admin login.
 * The helpline shown for frozen accounts is 0300-1234567.
-* The daily withdrawal limit is Rs. 50,000 per account for each run of the program.
 * Fixed exchange rates: 1 USD = 280 PKR, 1 SAR = 300 PKR.
 
 ## Testing
@@ -41,7 +40,7 @@ The program was assembled with UASM, a MASM-compatible assembler, and linked wit
   * the 21st account (refused with "bank full")
 * Customer login: a wrong PIN, then the correct PIN. Lockout and exit after 3 wrong PINs.
 * Balance inquiry and deposit.
-* Withdrawal: not enough money, over the daily limit, and a valid withdrawal.
+* Withdrawal: not enough money, a normal withdrawal, and a large one (Rs. 60,000).
 * Transfer:
   * to your own account
   * to an account that does not exist
